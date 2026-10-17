@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel de monitoreo del SO</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --txt:#e2e8f0; --mut:#94a3b8; --acc:#38bdf8; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--txt); padding:20px; }
+  header { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; margin-bottom:20px; }
+  h1 { margin:0; font-size:1.4rem; }
+  .sub { color:var(--mut); font-size:.85rem; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; }
+  .card { background:var(--card); border-radius:12px; padding:16px; }
+  .card h2 { margin:0 0 8px; font-size:.8rem; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+  .big { font-size:2rem; font-weight:700; }
+  .bar { height:8px; background:#334155; border-radius:4px; overflow:hidden; margin-top:8px; }
+  .bar > div { height:100%; transition:width .4s, background .4s; }
+  .wide { grid-column:1/-1; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #334155; }
+  th { color:var(--mut); font-weight:500; }
+  canvas { max-height:220px; }
+  .err { color:var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🖥️ Panel de monitoreo del sistema operativo</h1>
+    <div class="sub" id="info">Conectando…</div>
+  </div>
+  <div class="sub" id="status">—</div>
+</header>
+
+<div class="grid">
+  <div class="card"><h2>CPU</h2><div class="big" id="cpu">–</div><div class="bar"><div id="cpuBar"></div></div><div class="sub" id="cpuSub"></div></div>
+  <div class="card"><h2>Memoria RAM</h2><div class="big" id="mem">–</div><div class="bar"><div id="memBar"></div></div><div class="sub" id="memSub"></div></div>
+  <div class="card"><h2>Disco (/)</h2><div class="big" id="disk">–</div><div class="bar"><div id="diskBar"></div></div><div class="sub" id="diskSub"></div></div>
+  <div class="card"><h2>Red</h2><div class="big" id="net">–</div><div class="sub" id="netSub"></div></div>
+
+  <div class="card wide"><h2>Historial CPU y RAM (%)</h2><canvas id="hist"></canvas></div>
+  <div class="card"><h2>Uso por núcleo (%)</h2><canvas id="cores"></canvas></div>
+  <div class="card"><h2>Procesos</h2><div class="sub" id="procCount"></div>
+    <table><thead><tr><th>PID</th><th>Nombre</th><th>CPU%</th><th>RAM%</th></tr></thead><tbody id="procs"></tbody></table>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmtB = b => { const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024&&i<4){b/=1024;i++;} return b.toFixed(i?1:0)+' '+u[i]; };
+const fmtUp = s => `${Math.floor(s/86400)}d ${Math.floor(s%86400/3600)}h ${Math.floor(s%3600/60)}m`;
+const color = p => p<60 ? 'var(--ok)' : p<85 ? 'var(--warn)' : 'var(--bad)';
+function setBar(id, p){ const e=$(id); e.style.width=p+'%'; e.style.background=color(p); }
+
+const MAX = 40;
+const hist = new Chart($('hist'), { type:'line',
+  data:{ labels:[], datasets:[
+    {label:'CPU', data:[], borderColor:'#38bdf8', tension:.3, pointRadius:0},
+    {label:'RAM', data:[], borderColor:'#a78bfa', tension:.3, pointRadius:0}]},
+  options:{ animation:false, scales:{ y:{min:0,max:100} }, plugins:{legend:{labels:{color:'#e2e8f0'}}} }});
+const cores = new Chart($('cores'), { type:'bar',
+  data:{ labels:[], datasets:[{data:[], backgroundColor:'#38bdf8'}]},
+  options:{ animation:false, scales:{ y:{min:0,max:100} }, plugins:{legend:{display:false}} }});
+
+async function tick(){
+  try {
+    const r = await fetch('/api/stats'); const d = await r.json();
+    $('info').textContent = `${d.host} · ${d.os} · uptime ${fmtUp(d.uptime_s)}`;
+    $('status').textContent = 'Actualizado ' + new Date().toLocaleTimeString(); $('status').className='sub';
+
+    $('cpu').textContent = d.cpu.percent.toFixed(1)+'%'; setBar('cpuBar', d.cpu.percent);
+    $('cpuSub').textContent = `${d.cpu.cores} núcleos` + (d.cpu.load ? ` · carga ${d.cpu.load.join(' / ')}` : '');
+    $('mem').textContent = d.memory.percent.toFixed(1)+'%'; setBar('memBar', d.memory.percent);
+    $('memSub').textContent = `${fmtB(d.memory.used)} de ${fmtB(d.memory.total)} · swap ${d.swap.percent}%`;
+    $('disk').textContent = d.disk.percent.toFixed(1)+'%'; setBar('diskBar', d.disk.percent);
+    $('diskSub').textContent = `${fmtB(d.disk.used)} de ${fmtB(d.disk.total)}`;
+    $('net').textContent = '↓ ' + fmtB(d.network.down_bps)+'/s';
+    $('netSub').textContent = '↑ ' + fmtB(d.network.up_bps)+'/s';
+
+    hist.data.labels.push(new Date().toLocaleTimeString());
+    hist.data.datasets[0].data.push(d.cpu.percent);
+    hist.data.datasets[1].data.push(d.memory.percent);
+    if (hist.data.labels.length > MAX) { hist.data.labels.shift(); hist.data.datasets.forEach(s=>s.data.shift()); }
+    hist.update();
+
+    cores.data.labels = d.cpu.per_core.map((_,i)=>'C'+i);
+    cores.data.datasets[0].data = d.cpu.per_core; cores.update();
+
+    $('procCount').textContent = `${d.process_count} procesos en ejecución (top 8 por CPU)`;
+    $('procs').innerHTML = d.processes.map(p=>`<tr><td>${p.pid}</td><td>${p.name}</td><td>${p.cpu}</td><td>${p.mem}</td></tr>`).join('');
+  } catch(e) { $('status').textContent = 'Sin conexión con el servidor'; $('status').className='sub err'; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
